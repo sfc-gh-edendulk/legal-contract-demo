@@ -1,0 +1,18 @@
+CUAD_v1/
+Atticus Open Contract Dataset.zip
+node_modules/
+__pycache__/
+*.pyc
+.env
+.env.local
+env.list
+*.egg-info/
+dist/
+build/
+frontend/build/
+.DS_Store
+*.log
+.vscode/
+.idea/
+*.swp
+*.swo
