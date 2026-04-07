@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, FileText, CheckCircle, AlertTriangle } from 'lucide-react'
+import { ArrowLeft, FileText, CheckCircle, XCircle, Flag, AlertTriangle } from 'lucide-react'
 import { RiskBadge, TeamBadge, StatusBadge } from './Badges'
 
 export default function TeamReview() {
@@ -25,14 +25,14 @@ export default function TeamReview() {
     setLoading(false)
   }
 
-  async function markReviewed(contractId, clauseId) {
+  async function updateClauseStatus(contractId, clauseId, status) {
     try {
       await fetch(`/api/contracts/${contractId}/clauses/${clauseId}/review`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'reviewed' })
+        body: JSON.stringify({ status })
       })
-      setClauses(prev => prev.map(c => c.clause_id === clauseId ? { ...c, review_status: 'reviewed' } : c))
+      setClauses(prev => prev.map(c => c.clause_id === clauseId ? { ...c, review_status: status } : c))
     } catch (e) {
       console.error('Failed to update:', e)
     }
@@ -43,7 +43,9 @@ export default function TeamReview() {
   const stats = {
     total: clauses.length,
     pending: clauses.filter(c => c.review_status === 'pending').length,
-    reviewed: clauses.filter(c => c.review_status === 'reviewed').length,
+    approved: clauses.filter(c => c.review_status === 'approved').length,
+    flagged: clauses.filter(c => c.review_status === 'flagged').length,
+    rejected: clauses.filter(c => c.review_status === 'rejected').length,
     highRisk: clauses.filter(c => c.risk_level === 'High').length,
   }
 
@@ -74,8 +76,8 @@ export default function TeamReview() {
           <p className="text-3xl font-bold text-amber-500">{stats.pending}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <p className="text-sm text-gray-500">Reviewed</p>
-          <p className="text-3xl font-bold text-green-500">{stats.reviewed}</p>
+          <p className="text-sm text-gray-500">Approved</p>
+          <p className="text-3xl font-bold text-green-500">{stats.approved}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <p className="text-sm text-gray-500">High Risk</p>
@@ -85,12 +87,12 @@ export default function TeamReview() {
 
       <div className="bg-white rounded-xl border border-gray-200">
         <div className="p-4 border-b border-gray-200 flex gap-2">
-          {['', 'pending', 'reviewed'].map(s => (
+          {[['', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['flagged', 'To Modify'], ['rejected', 'Problematic']].map(([s, label]) => (
             <button key={s} onClick={() => setStatusFilter(s)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 statusFilter === s ? 'bg-snowflake-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
               }`}>
-              {s ? s.charAt(0).toUpperCase() + s.slice(1) : 'All'} ({s ? clauses.filter(c => c.review_status === s).length : clauses.length})
+              {label} ({s ? clauses.filter(c => c.review_status === s).length : clauses.length})
             </button>
           ))}
         </div>
@@ -121,12 +123,32 @@ export default function TeamReview() {
                 <p className="text-sm text-gray-600 mb-2 line-clamp-2">{clause.clause_text}</p>
                 <div className="flex items-center justify-between">
                   <p className="text-xs text-gray-500 italic">{clause.risk_explanation}</p>
-                  {clause.review_status !== 'reviewed' && (
-                    <button onClick={() => markReviewed(clause.contract_id, clause.clause_id)}
-                      className="flex items-center gap-1 text-xs text-snowflake-600 hover:text-snowflake-700 font-medium whitespace-nowrap ml-4">
-                      <CheckCircle className="w-3.5 h-3.5" /> Mark Reviewed
-                    </button>
-                  )}
+                  <div className="flex items-center gap-1 ml-4">
+                    {!['approved','flagged','rejected'].includes(clause.review_status) ? (
+                      <>
+                        <button onClick={() => updateClauseStatus(clause.contract_id, clause.clause_id, 'approved')}
+                          title="Approve"
+                          className="p-1 rounded hover:bg-green-100 text-green-600 hover:text-green-700 transition-colors">
+                          <CheckCircle className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => updateClauseStatus(clause.contract_id, clause.clause_id, 'flagged')}
+                          title="Flag for Modification"
+                          className="p-1 rounded hover:bg-amber-100 text-amber-600 hover:text-amber-700 transition-colors">
+                          <Flag className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => updateClauseStatus(clause.contract_id, clause.clause_id, 'rejected')}
+                          title="Mark as Problematic"
+                          className="p-1 rounded hover:bg-red-100 text-red-600 hover:text-red-700 transition-colors">
+                          <XCircle className="w-4 h-4" />
+                        </button>
+                      </>
+                    ) : (
+                      <button onClick={() => updateClauseStatus(clause.contract_id, clause.clause_id, 'pending')}
+                        className="text-xs text-gray-400 hover:text-gray-600">
+                        Reset
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}

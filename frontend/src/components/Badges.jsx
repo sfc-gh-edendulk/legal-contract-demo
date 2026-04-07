@@ -33,6 +33,9 @@ export function StatusBadge({ status }) {
     'pending': { bg: 'bg-gray-100', text: 'text-gray-600', label: 'Pending' },
     'in_review': { bg: 'bg-blue-100', text: 'text-blue-700', label: 'In Review' },
     'reviewed': { bg: 'bg-green-100', text: 'text-green-700', label: 'Reviewed' },
+    'approved': { bg: 'bg-green-100', text: 'text-green-700', label: 'Approved' },
+    'flagged': { bg: 'bg-amber-100', text: 'text-amber-700', label: 'To Modify' },
+    'rejected': { bg: 'bg-red-100', text: 'text-red-700', label: 'Problematic' },
   }
   const c = config[status] || config.pending
   return (

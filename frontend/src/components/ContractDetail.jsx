@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Calendar, Users, AlertTriangle, CheckCircle, Eye } from 'lucide-react'
+import { ArrowLeft, Calendar, Users, AlertTriangle, CheckCircle, XCircle, Flag, Eye } from 'lucide-react'
 import { RiskBadge, TeamBadge, StatusBadge } from './Badges'
 
 const TEAM_COLORS = {
@@ -44,16 +44,26 @@ export default function ContractDetail() {
     setLoading(false)
   }
 
-  async function markReviewed(clauseId) {
+  async function updateClauseStatus(clauseId, status) {
     try {
       await fetch(`/api/contracts/${id}/clauses/${clauseId}/review`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'reviewed' })
+        body: JSON.stringify({ status })
       })
-      setClauses(prev => prev.map(c => c.clause_id === clauseId ? { ...c, review_status: 'reviewed' } : c))
+      setClauses(prev => prev.map(c => c.clause_id === clauseId ? { ...c, review_status: status } : c))
     } catch (e) {
       console.error('Failed to update review status:', e)
+    }
+  }
+
+  function scrollToClause(clauseId) {
+    setActiveClause(clauseId)
+    const mark = document.querySelector(`mark[data-clause="${clauseId}"]`)
+    if (mark) {
+      mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      mark.classList.add('ring-2', 'ring-snowflake-500', 'ring-offset-1')
+      setTimeout(() => mark.classList.remove('ring-2', 'ring-snowflake-500', 'ring-offset-1'), 2000)
     }
   }
 
@@ -195,7 +205,8 @@ export default function ContractDetail() {
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             {filteredClauses.map(clause => (
               <div key={clause.clause_id}
-                className={`border-l-4 rounded-lg p-3 bg-white border border-gray-200 ${TEAM_COLORS[clause.assigned_team] || ''} ${
+                onClick={() => scrollToClause(clause.clause_id)}
+                className={`border-l-4 rounded-lg p-3 bg-white border border-gray-200 cursor-pointer hover:shadow-md transition-shadow ${TEAM_COLORS[clause.assigned_team] || ''} ${
                   activeClause === clause.clause_id ? 'ring-2 ring-snowflake-500' : ''
                 }`}>
                 <div className="flex items-center justify-between mb-2">
@@ -209,12 +220,33 @@ export default function ContractDetail() {
                 <p className="text-xs text-gray-500 italic mb-2">{clause.risk_explanation}</p>
                 <div className="flex items-center justify-between">
                   <TeamBadge team={clause.assigned_team} />
-                  {clause.review_status !== 'reviewed' && (
-                    <button onClick={() => markReviewed(clause.clause_id)}
-                      className="flex items-center gap-1 text-xs text-snowflake-600 hover:text-snowflake-700 font-medium">
-                      <CheckCircle className="w-3.5 h-3.5" /> Mark Reviewed
-                    </button>
-                  )}
+                  <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                    {!['approved','flagged','rejected'].includes(clause.review_status) && (
+                      <>
+                        <button onClick={() => updateClauseStatus(clause.clause_id, 'approved')}
+                          title="Approve"
+                          className="p-1 rounded hover:bg-green-100 text-green-600 hover:text-green-700 transition-colors">
+                          <CheckCircle className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => updateClauseStatus(clause.clause_id, 'flagged')}
+                          title="Flag for Modification"
+                          className="p-1 rounded hover:bg-amber-100 text-amber-600 hover:text-amber-700 transition-colors">
+                          <Flag className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => updateClauseStatus(clause.clause_id, 'rejected')}
+                          title="Mark as Problematic"
+                          className="p-1 rounded hover:bg-red-100 text-red-600 hover:text-red-700 transition-colors">
+                          <XCircle className="w-4 h-4" />
+                        </button>
+                      </>
+                    )}
+                    {['approved','flagged','rejected'].includes(clause.review_status) && (
+                      <button onClick={() => updateClauseStatus(clause.clause_id, 'pending')}
+                        className="text-xs text-gray-400 hover:text-gray-600">
+                        Reset
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}
