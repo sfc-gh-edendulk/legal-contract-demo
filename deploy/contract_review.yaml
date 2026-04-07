@@ -1,0 +1,19 @@
+spec:
+  containers:
+    - name: contract-review
+      image: /legal_contract_demo/app/image_repo/contract-review:latest
+      env:
+        SNOWFLAKE_WAREHOUSE: COMPUTE_WH
+        DATA_DB: LEGAL_CONTRACT_DEMO
+        DATA_SCHEMA: APP
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi
+  endpoints:
+    - name: app
+      port: 5000
+      public: true
