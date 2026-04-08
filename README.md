@@ -2,6 +2,18 @@
 
 AI-powered contract review application built on Snowflake. Uses Cortex AI to extract and classify clauses by responsible team, highlight risky passages, and route review tasks to the right people — because legal teams often lack the technical or commercial expertise to review every clause.
 
+## Demo
+
+**Dashboard** — contract list with AI-extracted risk scores, team queues, and search/filter:
+
+![Dashboard](docs/demo2.gif)
+
+**Contract detail** — full contract text with highlighted clauses, click-to-scroll navigation, and Approve / Flag / Reject review actions:
+
+![Contract detail](docs/demo1.gif)
+
+---
+
 ## Architecture
 
 ```
