@@ -1,7 +1,8 @@
 -- Legal Contract Review Demo - Snowflake Setup
--- Run with role: SS_ADMIN_ROLE
+-- Requires SYSADMIN role (or equivalent with CREATE DATABASE, SCHEMA, TABLE, STAGE, IMAGE REPOSITORY privileges)
+-- TODO: Replace COMPUTE_WH with your warehouse name if different
 
-USE ROLE SS_ADMIN_ROLE;
+USE ROLE SYSADMIN;
 USE WAREHOUSE COMPUTE_WH;
 
 CREATE DATABASE IF NOT EXISTS LEGAL_CONTRACT_DEMO;
