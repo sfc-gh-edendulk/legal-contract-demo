@@ -1,9 +1,41 @@
 import os
 import json
 import time
+import argparse
 from snowflake.snowpark import Session
 
 CONNECTION_NAME = os.getenv("SNOWFLAKE_CONNECTION_NAME") or "CURSOR-AZURE_NETHERLANDS"
+
+TEAM_MAP = {
+    "Governing Law": "Legal",
+    "Anti-Assignment": "Legal",
+    "Change of Control": "Legal",
+    "Termination For Convenience": "Legal",
+    "Non-Disparagement": "Legal",
+    "IP Ownership Assignment": "Technical/Ops",
+    "License Grant": "Technical/Ops",
+    "Non-Transferable License": "Technical/Ops",
+    "Revenue/Profit Sharing": "Sales",
+    "Price Restrictions": "Sales",
+    "Minimum Commitment": "Sales",
+    "Exclusivity": "Sales",
+    "Non-Compete": "Sales",
+    "Audit Rights": "Sales",
+    "Unlimited/All-You-Can-Eat-License": "Marketing",
+    "Irrevocable Or Perpetual License": "Marketing",
+    "No-Solicit Of Customers": "Marketing",
+    "Warranty Duration": "Technical/Ops",
+    "Source Code Escrow": "Technical/Ops",
+    "Post-Termination Services": "Technical/Ops",
+    "Most Favored Nation": "Sales",
+    "Liquidated Damages": "Sales",
+    "Cap On Liability": "Sales",
+    "Uncapped Liability": "Sales",
+    "Competitive Restriction Exception": "Marketing",
+    "Insurance": "Technical/Ops",
+}
+
+AI_EXTRACT_CATEGORIES = list(TEAM_MAP.keys())
 
 def get_session():
     return Session.builder.config("connection_name", CONNECTION_NAME).create()
@@ -40,16 +72,13 @@ def parse_json_response(raw):
     if not raw:
         return None
     try:
-        parsed = json.loads(raw)
-        return parsed
+        return json.loads(raw)
     except json.JSONDecodeError:
         pass
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
         start = 1
-        if lines[0].strip().startswith("```"):
-            start = 1
         end = len(lines)
         for i in range(len(lines)-1, 0, -1):
             if lines[i].strip().startswith("```"):
@@ -68,25 +97,11 @@ def parse_json_response(raw):
                     pass
     return None
 
-def main():
-    session = get_session()
-    session.sql("USE WAREHOUSE COMPUTE_WH").collect()
 
-    session.sql("TRUNCATE TABLE LEGAL_CONTRACT_DEMO.ANALYTICS.CLAUSE_ANALYSIS").collect()
-    session.sql("TRUNCATE TABLE LEGAL_CONTRACT_DEMO.ANALYTICS.CONTRACT_SUMMARY").collect()
-
-    contracts = session.sql("""
-        SELECT CONTRACT_ID, CONTRACT_TYPE, FILENAME, LENGTH(FULL_TEXT) as TEXT_LEN
-        FROM LEGAL_CONTRACT_DEMO.RAW.CONTRACT_TEXT
-        ORDER BY TEXT_LEN ASC
-    """).collect()
-
-    print(f"Processing {len(contracts)} contracts\n")
-
+def run_complete_pipeline(session, contracts):
     for i, row in enumerate(contracts):
         cid = row["CONTRACT_ID"]
         ctype = row["CONTRACT_TYPE"]
-        fname = row["FILENAME"][:60]
         tlen = row["TEXT_LEN"]
         truncate_len = min(tlen, 60000)
 
@@ -161,6 +176,154 @@ def main():
             print(f"  ERROR (summary): {str(e)[:100]}")
 
         time.sleep(0.5)
+
+
+def run_hybrid_pipeline(session, contracts):
+    for i, row in enumerate(contracts):
+        cid = row["CONTRACT_ID"]
+        ctype = row["CONTRACT_TYPE"]
+        tlen = row["TEXT_LEN"]
+
+        print(f"[{i+1}/{len(contracts)}] {cid} ({ctype}, {tlen} chars)")
+
+        clauses_found = []
+        for cat in AI_EXTRACT_CATEGORIES:
+            try:
+                result = session.sql(f"""
+                    SELECT AI_EXTRACT(
+                        text => SUBSTR(FULL_TEXT, 1, 60000),
+                        responseFormat => {{
+                            'schema': {{
+                                'type': 'object',
+                                'properties': {{
+                                    'clause_text': {{
+                                        'description': 'Exact quote of the {cat} clause, up to 300 chars. Return empty if not found.',
+                                        'type': 'string'
+                                    }}
+                                }}
+                            }}
+                        }}
+                    ) AS EXTRACTION
+                    FROM LEGAL_CONTRACT_DEMO.RAW.CONTRACT_TEXT
+                    WHERE CONTRACT_ID = '{cid}'
+                """).collect()
+
+                if result:
+                    ext = result[0]["EXTRACTION"]
+                    if ext:
+                        parsed = json.loads(ext) if isinstance(ext, str) else ext
+                        resp = parsed.get("response", {}) if isinstance(parsed, dict) else {}
+                        clause_text = resp.get("clause_text", "")
+                        if clause_text and len(clause_text) > 10:
+                            clauses_found.append({"clause_type": cat, "clause_text": clause_text})
+            except Exception as e:
+                print(f"    extract/{cat}: {str(e)[:60]}")
+
+        for clause in clauses_found:
+            try:
+                risk_result = session.sql(f"""
+                    SELECT AI_CLASSIFY(
+                        '{safe_sql_string(clause["clause_text"][:500])}',
+                        [
+                            {{'label': 'High', 'description': 'One-sided terms, uncapped liability, broad restrictions'}},
+                            {{'label': 'Medium', 'description': 'Notable terms needing review'}},
+                            {{'label': 'Low', 'description': 'Standard balanced terms'}}
+                        ],
+                        {{'task_description': 'Classify contract clause risk level'}}
+                    ):labels[0]::VARCHAR AS RISK
+                """).collect()
+                risk = risk_result[0]["RISK"] if risk_result else "Medium"
+            except Exception:
+                risk = "Medium"
+
+            try:
+                team_result = session.sql(f"""
+                    SELECT AI_CLASSIFY(
+                        '{safe_sql_string(clause["clause_type"] + ": " + clause["clause_text"][:500])}',
+                        [
+                            {{'label': 'Legal', 'description': 'Governing Law, Termination, Indemnification, Anti-Assignment'}},
+                            {{'label': 'Technical/Ops', 'description': 'IP Ownership, License, Warranty, Source Code'}},
+                            {{'label': 'Sales', 'description': 'Revenue, Pricing, Exclusivity, Non-Compete, Audit'}},
+                            {{'label': 'Marketing', 'description': 'Branding, No-Solicit, Unlimited License'}}
+                        ],
+                        {{'task_description': 'Route contract clause to responsible review team'}}
+                    ):labels[0]::VARCHAR AS TEAM
+                """).collect()
+                team = team_result[0]["TEAM"] if team_result else TEAM_MAP.get(clause["clause_type"], "Legal")
+            except Exception:
+                team = TEAM_MAP.get(clause["clause_type"], "Legal")
+
+            ct = safe_sql_string(clause["clause_type"])[:200]
+            cx = safe_sql_string(clause["clause_text"])[:4000]
+            session.sql(f"""
+                INSERT INTO LEGAL_CONTRACT_DEMO.ANALYTICS.CLAUSE_ANALYSIS
+                (CONTRACT_ID, CLAUSE_TYPE, CLAUSE_TEXT, ASSIGNED_TEAM, RISK_LEVEL, RISK_EXPLANATION)
+                VALUES ('{cid}', '{ct}', '{cx}', '{safe_sql_string(team)}', '{safe_sql_string(risk)}', '')
+            """).collect()
+
+        print(f"  Clauses: {len(clauses_found)}")
+
+        try:
+            result = session.sql(f"""
+                SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                    'mistral-large2',
+                    CONCAT('{safe_sql_string(SUMMARY_PROMPT)}', SUBSTR(FULL_TEXT, 1, {min(tlen, 60000)}))
+                ) AS result
+                FROM LEGAL_CONTRACT_DEMO.RAW.CONTRACT_TEXT
+                WHERE CONTRACT_ID = '{cid}'
+            """).collect()
+
+            if result:
+                summary = parse_json_response(result[0]["RESULT"])
+                if isinstance(summary, dict):
+                    cn = safe_sql_string(str(summary.get("contract_name", "Unknown")))[:500]
+                    parties = safe_sql_string(str(summary.get("parties", "")))[:1000]
+                    ed = safe_sql_string(str(summary.get("effective_date", "")))[:100]
+                    xd = safe_sql_string(str(summary.get("expiration_date", "")))[:100]
+                    risk_s = safe_sql_string(str(summary.get("overall_risk", "Medium")))[:10]
+                    st = safe_sql_string(str(summary.get("summary_text", "")))[:4000]
+                    kf = safe_sql_string(json.dumps(summary.get("key_findings", [])))
+                    ts = safe_sql_string(json.dumps({"Legal":"pending","Technical/Ops":"pending","Sales":"pending","Marketing":"pending"}))
+
+                    session.sql(f"""
+                        INSERT INTO LEGAL_CONTRACT_DEMO.ANALYTICS.CONTRACT_SUMMARY
+                        (CONTRACT_ID, CONTRACT_NAME, CONTRACT_TYPE, PARTIES, EFFECTIVE_DATE,
+                         EXPIRATION_DATE, OVERALL_RISK, SUMMARY_TEXT, KEY_FINDINGS, TEAM_REVIEW_STATUS)
+                        VALUES ('{cid}', '{cn}', '{safe_sql_string(ctype)}',
+                                '{parties}', '{ed}', '{xd}', '{risk_s}', '{st}',
+                                PARSE_JSON('{kf}'), PARSE_JSON('{ts}'))
+                    """).collect()
+                    print(f"  Summary: {risk_s} risk")
+        except Exception as e:
+            print(f"  ERROR (summary): {str(e)[:100]}")
+
+        time.sleep(0.3)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run Cortex AI contract analysis pipeline")
+    parser.add_argument("--method", choices=["complete", "hybrid"], default="complete",
+                        help="Pipeline method: 'complete' (CORTEX.COMPLETE only) or 'hybrid' (AI_EXTRACT + AI_CLASSIFY)")
+    args = parser.parse_args()
+
+    session = get_session()
+    session.sql("USE WAREHOUSE COMPUTE_WH").collect()
+
+    session.sql("TRUNCATE TABLE LEGAL_CONTRACT_DEMO.ANALYTICS.CLAUSE_ANALYSIS").collect()
+    session.sql("TRUNCATE TABLE LEGAL_CONTRACT_DEMO.ANALYTICS.CONTRACT_SUMMARY").collect()
+
+    contracts = session.sql("""
+        SELECT CONTRACT_ID, CONTRACT_TYPE, FILENAME, LENGTH(FULL_TEXT) as TEXT_LEN
+        FROM LEGAL_CONTRACT_DEMO.RAW.CONTRACT_TEXT
+        ORDER BY TEXT_LEN ASC
+    """).collect()
+
+    print(f"Processing {len(contracts)} contracts with method: {args.method}\n")
+
+    if args.method == "hybrid":
+        run_hybrid_pipeline(session, contracts)
+    else:
+        run_complete_pipeline(session, contracts)
 
     clause_count = session.sql("SELECT COUNT(*) as CNT FROM LEGAL_CONTRACT_DEMO.ANALYTICS.CLAUSE_ANALYSIS").collect()[0]["CNT"]
     summary_count = session.sql("SELECT COUNT(*) as CNT FROM LEGAL_CONTRACT_DEMO.ANALYTICS.CONTRACT_SUMMARY").collect()[0]["CNT"]

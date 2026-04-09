@@ -206,6 +206,119 @@ def get_dashboard_stats():
     })
 
 
+@app.route("/api/experiments/runs", methods=["GET"])
+def list_experiment_runs():
+    session = get_session()
+    runs = session.sql("""
+        SELECT RUN_ID, METHOD, MODEL, STARTED_AT, FINISHED_AT,
+               TOTAL_WALL_TIME_SECS, TOTAL_CREDITS_ESTIMATE,
+               CONTRACT_COUNT, CLAUSE_COUNT, NOTES
+        FROM LEGAL_CONTRACT_DEMO.EXPERIMENTS.RUN_METADATA
+        ORDER BY STARTED_AT DESC
+    """).collect()
+
+    metrics = session.sql("""
+        SELECT RUN_ID, METRIC_NAME, AVG(METRIC_VALUE) AS AVG_VAL
+        FROM LEGAL_CONTRACT_DEMO.EXPERIMENTS.EVAL_METRICS
+        GROUP BY RUN_ID, METRIC_NAME
+    """).collect()
+    metrics_by_run = {}
+    for m in metrics:
+        rid = m["RUN_ID"]
+        if rid not in metrics_by_run:
+            metrics_by_run[rid] = {}
+        metrics_by_run[rid][m["METRIC_NAME"]] = m["AVG_VAL"]
+
+    result = []
+    for r in runs:
+        result.append({
+            "run_id": r["RUN_ID"],
+            "method": r["METHOD"],
+            "model": r["MODEL"],
+            "started_at": str(r["STARTED_AT"]) if r["STARTED_AT"] else None,
+            "finished_at": str(r["FINISHED_AT"]) if r["FINISHED_AT"] else None,
+            "total_wall_time_secs": r["TOTAL_WALL_TIME_SECS"],
+            "total_credits_estimate": r["TOTAL_CREDITS_ESTIMATE"],
+            "contract_count": r["CONTRACT_COUNT"],
+            "clause_count": r["CLAUSE_COUNT"],
+            "metrics": metrics_by_run.get(r["RUN_ID"], {}),
+        })
+    return jsonify(result)
+
+
+@app.route("/api/experiments/<run_id>", methods=["GET"])
+def get_experiment_run(run_id):
+    session = get_session()
+    safe_id = run_id.replace("'", "''")
+
+    results = session.sql(f"""
+        SELECT CONTRACT_ID, STEP, WALL_TIME_MS, INPUT_CHARS, CLAUSE_COUNT, ERROR
+        FROM LEGAL_CONTRACT_DEMO.EXPERIMENTS.RUN_RESULTS
+        WHERE RUN_ID = '{safe_id}'
+        ORDER BY CONTRACT_ID
+    """).collect()
+
+    metrics = session.sql(f"""
+        SELECT CONTRACT_ID, METRIC_NAME, METRIC_VALUE
+        FROM LEGAL_CONTRACT_DEMO.EXPERIMENTS.EVAL_METRICS
+        WHERE RUN_ID = '{safe_id}'
+    """).collect()
+    metrics_by_contract = {}
+    for m in metrics:
+        cid = m["CONTRACT_ID"]
+        if cid not in metrics_by_contract:
+            metrics_by_contract[cid] = {}
+        metrics_by_contract[cid][m["METRIC_NAME"]] = m["METRIC_VALUE"]
+
+    contracts = []
+    for r in results:
+        contracts.append({
+            "contract_id": r["CONTRACT_ID"],
+            "step": r["STEP"],
+            "wall_time_ms": r["WALL_TIME_MS"],
+            "input_chars": r["INPUT_CHARS"],
+            "clause_count": r["CLAUSE_COUNT"],
+            "error": r["ERROR"],
+            "metrics": metrics_by_contract.get(r["CONTRACT_ID"], {}),
+        })
+    return jsonify({"run_id": run_id, "contracts": contracts})
+
+
+@app.route("/api/experiments/compare", methods=["GET"])
+def compare_experiments():
+    session = get_session()
+    comparison = session.sql("""
+        SELECT
+            rm.METHOD,
+            rm.RUN_ID,
+            rm.TOTAL_WALL_TIME_SECS,
+            rm.CONTRACT_COUNT,
+            rm.CLAUSE_COUNT,
+            AVG(CASE WHEN em.METRIC_NAME = 'clause_detection_f1' THEN em.METRIC_VALUE END) AS AVG_F1,
+            AVG(CASE WHEN em.METRIC_NAME = 'team_accuracy' THEN em.METRIC_VALUE END) AS AVG_TEAM_ACC,
+            AVG(CASE WHEN em.METRIC_NAME = 'text_overlap_jaccard' THEN em.METRIC_VALUE END) AS AVG_OVERLAP
+        FROM LEGAL_CONTRACT_DEMO.EXPERIMENTS.RUN_METADATA rm
+        LEFT JOIN LEGAL_CONTRACT_DEMO.EXPERIMENTS.EVAL_METRICS em ON rm.RUN_ID = em.RUN_ID
+        WHERE rm.FINISHED_AT IS NOT NULL
+        GROUP BY rm.METHOD, rm.RUN_ID, rm.TOTAL_WALL_TIME_SECS, rm.CONTRACT_COUNT, rm.CLAUSE_COUNT
+        ORDER BY rm.STARTED_AT DESC
+    """).collect()
+
+    result = []
+    for r in comparison:
+        result.append({
+            "method": r["METHOD"],
+            "run_id": r["RUN_ID"],
+            "total_wall_time_secs": r["TOTAL_WALL_TIME_SECS"],
+            "contract_count": r["CONTRACT_COUNT"],
+            "clause_count": r["CLAUSE_COUNT"],
+            "avg_f1": r["AVG_F1"],
+            "avg_team_accuracy": r["AVG_TEAM_ACC"],
+            "avg_text_overlap": r["AVG_OVERLAP"],
+        })
+    return jsonify(result)
+
+
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_react(path):

@@ -1,8 +1,9 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
-import { FileText, LayoutDashboard, Users, Upload } from 'lucide-react'
+import { FileText, LayoutDashboard, Users, Upload, FlaskConical } from 'lucide-react'
 import Dashboard from './components/Dashboard'
 import ContractDetail from './components/ContractDetail'
 import TeamReview from './components/TeamReview'
+import ExperimentDashboard from './components/ExperimentDashboard'
 
 const NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -10,6 +11,7 @@ const NAV_ITEMS = [
   { path: '/team/Technical/Ops', label: 'Technical', icon: Users },
   { path: '/team/Sales', label: 'Sales', icon: Users },
   { path: '/team/Marketing', label: 'Marketing', icon: Users },
+  { path: '/experiments', label: 'Experiments', icon: FlaskConical },
 ]
 
 function Sidebar() {
@@ -59,6 +61,7 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/contract/:id" element={<ContractDetail />} />
             <Route path="/team/:team" element={<TeamReview />} />
+            <Route path="/experiments" element={<ExperimentDashboard />} />
           </Routes>
         </main>
       </div>
