@@ -70,8 +70,19 @@ TEAM_MAP = {
 }
 
 
+_session = None
+
 def get_session():
-    return Session.builder.config("connection_name", CONNECTION_NAME).create()
+    global _session
+    if _session is not None:
+        try:
+            _session.sql("SELECT 1").collect()
+            return _session
+        except Exception:
+            _session = None
+    _session = Session.builder.config("connection_name", CONNECTION_NAME).create()
+    _session.sql("USE WAREHOUSE COMPUTE_WH").collect()
+    return _session
 
 
 def safe_sql_string(s):
@@ -116,6 +127,7 @@ def run_complete(session, contracts, run_id):
         truncate_len = min(tlen, 60000)
         print(f"  [{i + 1}/{len(contracts)}] {cid} ({tlen} chars)", end=" ... ", flush=True)
 
+        session = get_session()
         t0 = time.time()
         error = None
         output_raw = ""

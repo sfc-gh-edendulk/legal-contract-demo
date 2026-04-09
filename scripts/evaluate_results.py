@@ -99,6 +99,12 @@ def evaluate_run(session, run_id):
         if parsed is None:
             raw = res["OUTPUT_RAW"]
             if raw:
+                if isinstance(raw, str):
+                    raw = raw.strip()
+                    if raw.startswith("```"):
+                        raw = raw.split("\n", 1)[-1] if "\n" in raw else raw[3:]
+                    if raw.endswith("```"):
+                        raw = raw[:-3].strip()
                 try:
                     parsed = json.loads(raw) if isinstance(raw, str) else raw
                 except (json.JSONDecodeError, TypeError):
