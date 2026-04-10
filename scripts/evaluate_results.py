@@ -6,6 +6,49 @@ from snowflake.snowpark import Session
 
 CONNECTION_NAME = os.getenv("SNOWFLAKE_CONNECTION_NAME") or "CURSOR-AZURE_NETHERLANDS"
 
+CATEGORY_ALIASES = {
+    "ip ownership assignment": "ip ownership assignment",
+    "ip ownership": "ip ownership assignment",
+    "joint ip ownership": "joint ip ownership",
+    "joint ip": "joint ip ownership",
+    "unlimited all you can eat license": "unlimited/all-you-can-eat-license",
+    "unlimited license": "unlimited/all-you-can-eat-license",
+    "all you can eat license": "unlimited/all-you-can-eat-license",
+    "rofr rofo rofn": "rofr/rofo/rofn",
+    "rofr": "rofr/rofo/rofn",
+    "rofo": "rofr/rofo/rofn",
+    "rofn": "rofr/rofo/rofn",
+    "right of first refusal": "rofr/rofo/rofn",
+    "termination for convenience": "termination for convenience",
+    "termination": "termination for convenience",
+    "irrevocable or perpetual license": "irrevocable or perpetual license",
+    "perpetual license": "irrevocable or perpetual license",
+    "irrevocable license": "irrevocable or perpetual license",
+    "cap on liability": "cap on liability",
+    "liability cap": "cap on liability",
+    "uncapped liability": "uncapped liability",
+    "unlimited liability": "uncapped liability",
+    "no solicit of customers": "no-solicit of customers",
+    "no solicit of employees": "no-solicit of employees",
+    "non solicit of customers": "no-solicit of customers",
+    "non solicit of employees": "no-solicit of employees",
+    "affiliate license licensee": "affiliate license-licensee",
+    "affiliate license licensor": "affiliate license-licensor",
+    "competitive restriction exception": "competitive restriction exception",
+    "non compete": "non-compete",
+    "noncompete": "non-compete",
+    "non disparagement": "non-disparagement",
+    "nondisparagement": "non-disparagement",
+    "non transferable license": "non-transferable license",
+    "anti assignment": "anti-assignment",
+    "antiassignment": "anti-assignment",
+    "covenant not to sue": "covenant not to sue",
+    "third party beneficiary": "third party beneficiary",
+    "volume restriction": "volume restriction",
+    "most favored nation": "most favored nation",
+    "mfn": "most favored nation",
+}
+
 
 def get_session():
     return Session.builder.config("connection_name", CONNECTION_NAME).create()
@@ -15,12 +58,25 @@ def normalize(s):
     return s.lower().strip().replace("-", " ").replace("/", " ").replace("_", " ")
 
 
+def normalize_category(s):
+    norm = normalize(s)
+    norm = norm.replace("  ", " ")
+    if norm in CATEGORY_ALIASES:
+        return normalize(CATEGORY_ALIASES[norm])
+    for alias_key, alias_val in CATEGORY_ALIASES.items():
+        if alias_key in norm or norm in alias_key:
+            return normalize(alias_val)
+    return norm
+
+
 def fuzzy_match_category(detected_type, cuad_categories):
-    detected_norm = normalize(detected_type)
+    detected_norm = normalize_category(detected_type)
     best_score = 0
     best_cat = None
     for cat in cuad_categories:
-        cat_norm = normalize(cat)
+        cat_norm = normalize_category(cat)
+        if detected_norm == cat_norm:
+            return (cat, 1.0)
         score = SequenceMatcher(None, detected_norm, cat_norm).ratio()
         if score > best_score:
             best_score = score
@@ -41,6 +97,21 @@ def jaccard_similarity(text_a, text_b):
     intersection = words_a & words_b
     union = words_a | words_b
     return len(intersection) / len(union)
+
+
+def token_f1(pred, gold):
+    pred_tokens = normalize(pred).split()
+    gold_tokens = normalize(gold).split()
+    if not pred_tokens or not gold_tokens:
+        return 0.0
+    pred_set = set(pred_tokens)
+    gold_set = set(gold_tokens)
+    common = pred_set & gold_set
+    if not common:
+        return 0.0
+    p = len(common) / len(pred_set)
+    r = len(common) / len(gold_set)
+    return 2 * p * r / (p + r)
 
 
 def evaluate_run(session, run_id):
@@ -83,8 +154,6 @@ def evaluate_run(session, run_id):
             "spans": spans if isinstance(spans, list) else [],
         })
 
-    all_cuad_categories = list(set(r["CUAD_CATEGORY"] for r in ground_truth))
-
     session.sql(f"DELETE FROM LEGAL_CONTRACT_DEMO.EXPERIMENTS.EVAL_METRICS WHERE RUN_ID = '{run_id}'").collect()
 
     metrics_to_insert = []
@@ -102,7 +171,8 @@ def evaluate_run(session, run_id):
                 if isinstance(raw, str):
                     raw = raw.strip()
                     if raw.startswith("```"):
-                        raw = raw.split("\n", 1)[-1] if "\n" in raw else raw[3:]
+                        lines = raw.split("\n", 1)
+                        raw = lines[1] if len(lines) > 1 else raw[3:]
                     if raw.endswith("```"):
                         raw = raw[:-3].strip()
                 try:
@@ -125,19 +195,13 @@ def evaluate_run(session, run_id):
         else:
             continue
 
-        detected_types = []
-        for c in detected_clauses:
-            if isinstance(c, dict):
-                ct = c.get("clause_type", c.get("type", ""))
-                if ct:
-                    detected_types.append(ct)
-
         gt_categories = [g["category"] for g in gt_clauses]
         true_positives = 0
         matched_gt = set()
         team_correct = 0
         team_total = 0
-        overlap_scores = []
+        overlap_jaccard_scores = []
+        overlap_token_f1_scores = []
 
         for c in detected_clauses:
             if not isinstance(c, dict):
@@ -162,21 +226,23 @@ def evaluate_run(session, run_id):
                     if clause_text and gt_entry["spans"]:
                         gt_text = " ".join(s.get("text", "") for s in gt_entry["spans"] if isinstance(s, dict))
                         if gt_text:
-                            overlap = jaccard_similarity(clause_text, gt_text)
-                            overlap_scores.append(overlap)
+                            overlap_jaccard_scores.append(jaccard_similarity(clause_text, gt_text))
+                            overlap_token_f1_scores.append(token_f1(clause_text, gt_text))
 
         precision = true_positives / len(detected_clauses) if detected_clauses else 0
         recall = true_positives / len(gt_clauses) if gt_clauses else 0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
         team_acc = team_correct / team_total if team_total > 0 else 0
-        avg_overlap = sum(overlap_scores) / len(overlap_scores) if overlap_scores else 0
+        avg_jaccard = sum(overlap_jaccard_scores) / len(overlap_jaccard_scores) if overlap_jaccard_scores else 0
+        avg_token_f1 = sum(overlap_token_f1_scores) / len(overlap_token_f1_scores) if overlap_token_f1_scores else 0
 
         metrics_to_insert.extend([
             (run_id, cid, "clause_detection_precision", precision),
             (run_id, cid, "clause_detection_recall", recall),
             (run_id, cid, "clause_detection_f1", f1),
             (run_id, cid, "team_accuracy", team_acc),
-            (run_id, cid, "text_overlap_jaccard", avg_overlap),
+            (run_id, cid, "text_overlap_jaccard", avg_jaccard),
+            (run_id, cid, "text_overlap_token_f1", avg_token_f1),
         ])
 
     for run_id_v, cid_v, metric, value in metrics_to_insert:

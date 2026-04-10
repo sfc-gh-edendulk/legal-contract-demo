@@ -14,7 +14,7 @@ SELECT
                 'type': 'object',
                 'properties': {
                     'clause_text': {
-                        'description': 'Exact quote of the ' || f.value::VARCHAR || ' clause, up to 300 characters',
+                        'description': 'Exact quote of the ' || f.value::VARCHAR || ' clause, up to 800 characters',
                         'type': 'string'
                     },
                     'assigned_team': {
@@ -48,7 +48,10 @@ LATERAL FLATTEN(input => ARRAY_CONSTRUCT(
     'Source Code Escrow', 'Post-Termination Services',
     'Most Favored Nation', 'Liquidated Damages',
     'Cap On Liability', 'Uncapped Liability',
-    'Competitive Restriction Exception', 'Insurance'
+    'Competitive Restriction Exception', 'Insurance',
+    'Covenant Not To Sue', 'Volume Restriction', 'Joint IP Ownership',
+    'No-Solicit Of Employees', 'Affiliate License-Licensee',
+    'Rofr/Rofo/Rofn', 'Affiliate License-Licensor', 'Third Party Beneficiary'
 )) f
 WHERE EXTRACTION:clause_text::VARCHAR IS NOT NULL
   AND LENGTH(EXTRACTION:clause_text::VARCHAR) > 10;
