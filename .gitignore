@@ -1,6 +1,6 @@
 CUAD_v1/
-session_progress.md
 Atticus Open Contract Dataset.zip
+.snowflake/
 node_modules/
 __pycache__/
 *.pyc

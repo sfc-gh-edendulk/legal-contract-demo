@@ -160,3 +160,79 @@
 - [ ] Test /experiments dashboard in browser
 - [ ] Wire best pipeline as default
 - [ ] Merge to main
+
+## Session 5 - 2026-04-11
+
+### Completed (branch: legal-demo-ai-refactor)
+- [x] Loaded 31 additional CUAD contracts (29 → 60 total)
+- [x] Rewrote load_ground_truth.py with fuzzy filename matching + robust escaping
+- [x] Reloaded ground truth: 2185 rows, 791 present clauses across 60 contracts
+- [x] Added credit tracking columns to RUN_METADATA (AI_CREDITS_BEFORE/AFTER/DELTA, EXPERIMENT_TAG)
+- [x] Created 6 grid experiment SPs in snowflake/experiment_grid_sps.sql
+- [x] Ran 5 of 6 experiments (llama3.1-70b timed out on large contracts)
+- [x] Evaluated all 5 grid experiments against CUAD ground truth
+
+### Grid Experiment Results (v3 - 60 contracts)
+
+| Method              | Prec  | Recall | F1    | Team Acc | Jaccard | Token F1 | Wall Time | Credits | Contracts |
+|---------------------|-------|--------|-------|----------|---------|----------|-----------|---------|-----------|
+| complete (short)    | 0.460 | 0.731  | 0.543 | 0.904    | 0.341   | 0.434    | 1973s     | 1.49    | 60        |
+| ai_extract_classify | 0.601 | 0.376  | 0.439 | 0.866    | 0.383   | 0.476    | 1407s     | 137.21  | 59        |
+| ai_extract_nolimit  | 0.686 | 0.258  | 0.345 | 0.923    | 0.440   | 0.529    | 1123s     | ~137*   | 55        |
+| ai_extract_multi    | 0.624 | 0.240  | 0.324 | 0.843    | 0.420   | 0.499    | 632s      | 70.36   | 58        |
+| two_pass            | 0.658 | 0.237  | 0.325 | 0.917    | 0.408   | 0.495    | 3017s     | 1.59    | 57        |
+
+*nolimit credits not captured (metering view lag)
+
+### Credit Cost Analysis
+- **COMPLETE methods are 50-90x cheaper** than AI_EXTRACT methods (~1.5 vs ~70-137 credits)
+- ai_extract_multi (grouped) uses ~50% fewer credits than single-category ai_extract (70 vs 137)
+- Two-pass is cost-efficient (1.59 credits) but recall drops because COMPLETE discovery step misses clauses that AI_EXTRACT then can't find
+
+### Key Findings
+- **COMPLETE dominates recall** (0.731) and F1 (0.543) — best overall method for clause discovery
+- **200-char quotes avoid truncation**: 34/60 contracts with GT matched (vs 17/29 with 800-char quotes in v2)
+- **AI_EXTRACT recall is fundamentally limited** (~24-38%) because each category is queried independently
+- **Multi-property extraction didn't help recall** (0.240) — worse than single-category (0.376)
+- **Removing text limits didn't help recall** (0.258) — slightly worse, but best text overlap (0.529 token F1)
+- **Two-pass disappointed** (0.237 recall) — COMPLETE discovery step is good but AI_EXTRACT validation is too strict
+- **AI_EXTRACT methods have best text overlap** (0.44-0.53 token F1) — precise quotes when they find clauses
+- **Team accuracy**: all methods >84%, nolimit best (0.923)
+
+### Conclusions
+1. For **recall-focused** use case: COMPLETE is the clear winner (0.731 recall, 1.49 credits)
+2. For **precision-focused** use case: ai_extract_nolimit (0.686 precision, 0.529 token F1)
+3. For **cost-sensitive** use case: COMPLETE (1.49 credits vs 70-137 for AI_EXTRACT)
+4. For **balanced** production: COMPLETE with post-processing validation
+
+### Claude vs Mistral COMPLETE Comparison
+
+| Model             | Precision | Recall | F1    | Team Acc | Token F1 | Wall Time | Eval Contracts | Credits |
+|-------------------|-----------|--------|-------|----------|----------|-----------|----------------|---------|
+| mistral-large2    | 0.460     | 0.731  | 0.543 | 0.904    | 0.434    | 1973s     | 34             | 1.49    |
+| claude-3-7-sonnet | 0.643     | 0.638  | 0.626 | 0.926    | 0.384    | 67s       | 47             | ~2-5*   |
+
+*Claude credits estimated (metering view has ~2hr lag). Wall time suggests ~2-5 credits.
+
+**Claude wins**: best F1 (0.626), best precision (0.643), 30x faster (67s vs 1973s), more parseable outputs (47/60 vs 34/60).
+**Mistral wins**: higher recall (0.731 vs 0.638), better text overlap (0.434 vs 0.384).
+
+### Run IDs (v3 grid)
+- complete_short: b28ba399-cf91-4fea-8615-735c634dfb0a
+- two_pass: b2c619f5-6f68-40ab-bc09-f932e89ed8f2
+- ai_extract_multi: 5c09e55a-5821-44af-b107-b7a9179b8944
+- ai_extract_classify: 1d23b9df-4bce-4f75-a437-c641bef1653b
+- ai_extract_nolimit: 834c1a9a-cecd-4cd3-aadf-dd58c014e3cc
+- complete_claude: 665c1632-70e3-4b18-8aa1-00d471344410
+
+### New Files
+- snowflake/experiment_grid_sps.sql (6 grid experiment SPs)
+- scripts/load_more_contracts.py (loads additional CUAD contracts)
+
+### Modified Files
+- scripts/load_ground_truth.py (fuzzy filename matching, $$ escaping)
+
+### Remaining
+- [ ] Test /experiments dashboard in browser
+- [ ] Wire COMPLETE as default pipeline
+- [ ] Merge to main

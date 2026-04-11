@@ -57,16 +57,18 @@ def main():
         "SELECT CONTRACT_ID, FILENAME FROM LEGAL_CONTRACT_DEMO.RAW.CONTRACT_TEXT"
     ).collect()
     loaded_map = {}
+    loaded_bases = {}
     for r in loaded_contracts:
         base = r["FILENAME"].rsplit(".", 1)[0] if "." in r["FILENAME"] else r["FILENAME"]
         loaded_map[base] = r["CONTRACT_ID"]
+        loaded_bases[base.lower()] = r["CONTRACT_ID"]
     print(f"Found {len(loaded_map)} loaded contracts in Snowflake")
 
     cuad_path = os.path.join(os.path.dirname(__file__), "..", "CUAD_v1", "CUAD_v1.json")
     if not os.path.exists(cuad_path):
         cuad_path = os.path.join(os.path.dirname(__file__), "..", "Atticus Open Contract Dataset", "CUAD_v1.json")
     if not os.path.exists(cuad_path):
-        print("ERROR: Cannot find CUAD_v1.json. Download from https://www.atticusprojectai.org/cuad/")
+        print("ERROR: Cannot find CUAD_v1.json.")
         return
 
     with open(cuad_path) as f:
@@ -74,12 +76,25 @@ def main():
 
     print(f"CUAD dataset: {len(cuad['data'])} contracts")
 
+    def find_contract_id(cuad_title):
+        base = cuad_title.rsplit(".", 1)[0] if "." in cuad_title else cuad_title
+        cid = loaded_map.get(base)
+        if cid:
+            return cid
+        for loaded_base, cid in loaded_map.items():
+            if loaded_base.startswith(base) or base.startswith(loaded_base):
+                return cid
+        base_lower = base.lower()
+        for lb, cid in loaded_bases.items():
+            if lb.startswith(base_lower) or base_lower.startswith(lb):
+                return cid
+        return None
+
     rows = []
     matched = 0
     for doc in cuad["data"]:
         title = doc["title"]
-        base = title.rsplit(".", 1)[0] if "." in title else title
-        contract_id = loaded_map.get(base)
+        contract_id = find_contract_id(title)
         if not contract_id:
             continue
         matched += 1
@@ -123,25 +138,34 @@ def main():
 
     session.sql("TRUNCATE TABLE LEGAL_CONTRACT_DEMO.EXPERIMENTS.CUAD_GROUND_TRUTH").collect()
 
-    batch_size = 100
     inserted = 0
-    for i in range(0, len(rows), batch_size):
-        batch = rows[i:i + batch_size]
-        for r in batch:
-            spans_json = json.dumps(r["answer_spans"]).replace("'", "''")
+    errors = 0
+    for r in rows:
+        spans_json = json.dumps(r["answer_spans"])
+        spans_escaped = spans_json.replace("\\", "\\\\").replace("'", "''")
+        filename_escaped = r["filename"].replace("\\", "\\\\").replace("'", "''")
+        cat_escaped = r["cuad_category"].replace("'", "''")
+        try:
             session.sql(f"""
                 INSERT INTO LEGAL_CONTRACT_DEMO.EXPERIMENTS.CUAD_GROUND_TRUTH
                 (CONTRACT_ID, FILENAME, CUAD_CATEGORY, IS_PRESENT, ANSWER_SPANS, EXPECTED_TEAM)
                 SELECT '{r["contract_id"]}',
-                       '{r["filename"].replace("'", "''")}',
-                       '{r["cuad_category"].replace("'", "''")}',
+                       $${filename_escaped}$$,
+                       $${cat_escaped}$$,
                        {str(r["is_present"]).upper()},
-                       PARSE_JSON('{spans_json}'),
+                       PARSE_JSON($${spans_escaped}$$),
                        '{r["expected_team"]}'
             """).collect()
             inserted += 1
+        except Exception as e:
+            errors += 1
+            if errors <= 3:
+                print(f"  ERROR: {str(e)[:150]}")
 
-        print(f"  Inserted {inserted}/{len(rows)} rows...")
+        if inserted % 500 == 0 and inserted > 0:
+            print(f"  Inserted {inserted}/{len(rows)} rows...")
+
+    print(f"  Inserted {inserted}/{len(rows)} rows ({errors} errors)")
 
     final = session.sql("SELECT COUNT(*) AS CNT FROM LEGAL_CONTRACT_DEMO.EXPERIMENTS.CUAD_GROUND_TRUTH").collect()
     present = session.sql("SELECT COUNT(*) AS CNT FROM LEGAL_CONTRACT_DEMO.EXPERIMENTS.CUAD_GROUND_TRUTH WHERE IS_PRESENT").collect()
