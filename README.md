@@ -23,6 +23,7 @@ React 18 + Tailwind CSS  ←→  Flask + Snowpark Python  ←→  Snowflake Cort
                            RAW.CONTRACT_TEXT
                            ANALYTICS.CLAUSE_ANALYSIS
                            ANALYTICS.CONTRACT_SUMMARY
+                           EXPERIMENTS.* (experiment runs, metrics, ground truth)
 ```
 
 Deployed as a single Docker container on **Snowpark Container Services (SPCS)**.
@@ -92,13 +93,46 @@ python scripts/curate_contracts.py
 python scripts/load_contracts.py
 
 # Extract clauses with AI risk scoring (~665 clauses)
+# Default method uses CORTEX.COMPLETE; use --method hybrid for AI_EXTRACT + AI_CLASSIFY
 python scripts/run_analysis.py
+python scripts/run_analysis.py --method hybrid   # alternative pipeline
 
-# Generate contract-level summaries
+# Generate contract-level summaries (only needed with --method complete)
 python scripts/run_summaries.py
 ```
 
-Each script reads `SNOWFLAKE_CONNECTION_NAME` from the environment. The analysis scripts call `SNOWFLAKE.CORTEX.COMPLETE` with `mistral-large2` — expect ~10–20 minutes total for a fresh run.
+Each script reads `SNOWFLAKE_CONNECTION_NAME` from the environment. The `--method complete` pipeline calls `SNOWFLAKE.CORTEX.COMPLETE` with `mistral-large2` (~10–20 min). The `--method hybrid` pipeline uses `AI_EXTRACT` + `AI_CLASSIFY` SQL functions for set-based extraction and classification.
+
+---
+
+## Experimentation Module
+
+Compare AI pipeline methods (COMPLETE vs AI_EXTRACT vs hybrid) against CUAD ground truth:
+
+```bash
+# Set up the experiments schema (first time only)
+snow sql -f snowflake/experiments_setup.sql --connection $SNOWFLAKE_CONNECTION_NAME
+
+# Load CUAD ground-truth annotations
+python scripts/load_ground_truth.py
+
+# Run experiments (all methods, or pick one)
+python scripts/run_experiments.py --method all
+python scripts/run_experiments.py --method complete --limit 5  # quick test
+
+# Evaluate results against ground truth
+python scripts/evaluate_results.py --all
+```
+
+View results in the app at `/experiments` or query directly:
+
+```sql
+SELECT rm.METHOD, rm.TOTAL_WALL_TIME_SECS,
+       AVG(CASE WHEN em.METRIC_NAME = 'clause_detection_f1' THEN em.METRIC_VALUE END) AS AVG_F1
+FROM LEGAL_CONTRACT_DEMO.EXPERIMENTS.RUN_METADATA rm
+JOIN LEGAL_CONTRACT_DEMO.EXPERIMENTS.EVAL_METRICS em ON rm.RUN_ID = em.RUN_ID
+GROUP BY rm.METHOD, rm.TOTAL_WALL_TIME_SECS;
+```
 
 ---
 
@@ -170,8 +204,9 @@ Frontend dev server runs on port 5173, proxying API calls to Flask on port 5000.
 ```
 legal_demo/
 ├── snowflake/
-│   ├── setup.sql           # Database, schemas, tables, stages (SYSADMIN)
-│   └── spcs_setup.sql      # Compute pool and service (ACCOUNTADMIN)
+│   ├── setup.sql              # Database, schemas, tables, stages (SYSADMIN)
+│   ├── experiments_setup.sql  # Experiments schema + tables
+│   └── spcs_setup.sql         # Compute pool and service (ACCOUNTADMIN)
 ├── backend/
 │   ├── app.py              # Flask API
 │   ├── snowflake_utils.py  # Snowpark session (local + SPCS OAuth)
@@ -183,10 +218,15 @@ legal_demo/
 │   ├── Dockerfile          # Multi-stage build (Node + Python)
 │   └── contract_review.yaml # SPCS service spec
 └── scripts/
-    ├── curate_contracts.py  # Select ~30 contracts from CUAD
-    ├── load_contracts.py    # Load into Snowflake
-    ├── run_analysis.py      # Cortex AI clause extraction
-    └── run_summaries.py     # Cortex AI contract summaries
+    ├── curate_contracts.py      # Select ~30 contracts from CUAD
+    ├── load_contracts.py        # Load into Snowflake
+    ├── run_analysis.py          # Cortex AI clause extraction (--method complete|hybrid)
+    ├── run_summaries.py         # Cortex AI contract summaries
+    ├── run_experiments.py       # Experiment runner (all pipeline methods)
+    ├── evaluate_results.py      # Scoring vs CUAD ground truth
+    ├── load_ground_truth.py     # Parse CUAD_v1.json into Snowflake
+    ├── pipeline_ai_extract.sql  # AI_EXTRACT-based pipeline SQL
+    └── pipeline_ai_classify.sql # AI_CLASSIFY step SQL
 ```
 
 ---
